@@ -1,0 +1,222 @@
+# Kanban Agent Evaluation Tasks
+# 每个任务定义：prompt（给 Agent 的指令）、graders（评分器）
+
+tasks:
+  # ============ 基础任务 ============
+
+  - id: list_boards_001
+    name: 列出看板
+    difficulty: easy
+    prompt: |
+      请告诉我系统中有哪些看板项目？
+    graders:
+      - type: tool_calls
+        description: 应该调用 list_boards
+        required_tools: [list_boards]
+      - type: response_contains
+        description: 响应应包含看板名称
+        contains: ["产品开发", "营销活动"]
+
+  - id: view_board_001
+    name: 查看看板详情
+    difficulty: easy
+    prompt: |
+      查看"产品开发"看板的所有任务，告诉我每个列有多少任务。
+    graders:
+      - type: tool_calls
+        required_tools: [get_board_overview]
+      - type: response_contains
+        contains: ["待办", "进行中"]
+
+  # ============ 创建任务 ============
+
+  - id: create_task_001
+    name: 创建简单任务
+    difficulty: easy
+    prompt: |
+      在"产品开发"看板的"待办"列创建一个任务，标题是"实现暗黑模式"。
+    graders:
+      - type: state_check
+        description: 数据库中应存在该任务
+        sql: |
+          SELECT COUNT(*) as count FROM tasks
+          WHERE title LIKE '%暗黑模式%'
+        expect:
+          count: 1
+
+  - id: create_task_002
+    name: 创建带完整信息的任务
+    difficulty: medium
+    prompt: |
+      在产品开发看板的待办列创建一个紧急任务：
+      - 标题：修复支付接口bug
+      - 描述：用户反馈支付失败
+      - 优先级：urgent
+      - 负责人：bob
+    graders:
+      - type: state_check
+        sql: |
+          SELECT COUNT(*) as count FROM tasks
+          WHERE title LIKE '%支付%bug%'
+          AND priority = 'urgent'
+          AND assignee_id = 2
+        expect:
+          count: 1
+      - type: tool_calls
+        required_tools: [create_task]
+
+  # ============ 移动任务 ============
+
+  - id: move_task_001
+    name: 移动单个任务
+    difficulty: easy
+    prompt: |
+      把"用户登录功能"这个任务从待办移动到进行中。
+    graders:
+      - type: state_check
+        description: 任务应该在进行中列
+        sql: |
+          SELECT c.name as column_name FROM tasks t
+          JOIN columns c ON t.column_id = c.id
+          WHERE t.title LIKE '%用户登录%'
+        expect:
+          column_name: "进行中"
+      - type: tool_calls
+        required_tools: [move_task]
+
+  - id: move_task_002
+    name: 批量移动高优先级任务
+    difficulty: hard
+    prompt: |
+      请将产品开发看板中所有高优先级(high)和紧急(urgent)的待办任务移动到"进行中"列。
+    graders:
+      - type: state_check
+        description: 待办列不应有高优先级任务
+        sql: |
+          SELECT COUNT(*) as count FROM tasks t
+          JOIN columns c ON t.column_id = c.id
+          WHERE c.name = '待办'
+          AND c.board_id = 1
+          AND t.priority IN ('high', 'urgent')
+        expect:
+          count: 0
+      - type: state_check
+        description: 进行中列应有这些任务
+        sql: |
+          SELECT COUNT(*) as count FROM tasks t
+          JOIN columns c ON t.column_id = c.id
+          WHERE c.name = '进行中'
+          AND c.board_id = 1
+          AND t.priority IN ('high', 'urgent')
+        expect:
+          count: ">0"
+
+  # ============ 更新任务 ============
+
+  - id: update_task_001
+    name: 更新任务优先级
+    difficulty: easy
+    prompt: |
+      把"数据库优化"任务的优先级改成 urgent。
+    graders:
+      - type: state_check
+        sql: |
+          SELECT priority FROM tasks WHERE title LIKE '%数据库优化%'
+        expect:
+          priority: "urgent"
+
+  - id: update_task_002
+    name: 重新分配任务
+    difficulty: medium
+    prompt: |
+      查找所有分配给 alice 的任务，然后把其中优先级最高的那个改为分配给 charlie。
+    graders:
+      - type: tool_calls
+        required_tools: [list_tasks, update_task]
+      - type: state_check
+        description: charlie 应该有一个原属于 alice 的高优先级任务
+        sql: |
+          SELECT COUNT(*) as count FROM tasks
+          WHERE assignee_id = 3
+          AND priority IN ('high', 'urgent')
+        expect:
+          count: ">0"
+
+  # ============ 搜索任务 ============
+
+  - id: search_task_001
+    name: 搜索任务
+    difficulty: easy
+    prompt: |
+      搜索所有包含"API"关键词的任务，告诉我有几个。
+    graders:
+      - type: tool_calls
+        required_tools: [search_tasks]
+      - type: response_contains
+        contains: ["API"]
+
+  # ============ 复杂任务 ============
+
+  - id: complex_001
+    name: 项目状态汇报
+    difficulty: medium
+    prompt: |
+      生成产品开发看板的状态报告：
+      1. 各列任务数量
+      2. 高优先级任务列表
+      3. 即将到期的任务（如果有）
+    graders:
+      - type: tool_calls
+        required_tools: [get_board_overview]
+      - type: llm_rubric
+        rubric: |
+          评估 Agent 的响应是否包含以下内容（满分10分）：
+          - 各列任务统计 (3分)
+          - 高优先级任务明细 (3分)
+          - 截止日期相关信息 (2分)
+          - 格式清晰易读 (2分)
+        min_score: 6
+
+  - id: complex_002
+    name: 任务重新规划
+    difficulty: hard
+    prompt: |
+      请帮我重新规划产品开发看板：
+      1. 将所有已完成的任务删除
+      2. 将进行中超过一周没更新的任务标记为 urgent
+      3. 统计剩余工作量并汇报
+    graders:
+      - type: state_check
+        description: 已完成列应该为空
+        sql: |
+          SELECT COUNT(*) as count FROM tasks t
+          JOIN columns c ON t.column_id = c.id
+          WHERE c.name = '已完成' AND c.board_id = 1
+        expect:
+          count: 0
+      - type: tool_calls
+        required_tools: [delete_task]
+
+  - id: complex_003
+    name: 跨看板任务迁移
+    difficulty: hard
+    prompt: |
+      在营销活动看板中找到所有和"社交媒体"相关的任务，
+      在产品开发看板的待办列创建对应的技术支持任务。
+      新任务标题格式："[技术支持] 原任务标题"
+    graders:
+      - type: state_check
+        sql: |
+          SELECT COUNT(*) as count FROM tasks
+          WHERE title LIKE '%[技术支持]%社交%'
+        expect:
+          count: ">0"
+      - type: tool_calls
+        required_tools: [search_tasks, create_task]
+
+
+# ============ 评估配置 ============
+config:
+  trials_per_task: 3  # 每个任务运行次数
+  timeout_seconds: 60  # 单次运行超时
+  reset_db_between_trials: true  # 每次运行前重置数据库
